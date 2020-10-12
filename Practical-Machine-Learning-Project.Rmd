@@ -1,0 +1,171 @@
+---
+title: "Practical Machine Learning Project"
+author: "Wei Zhang"
+date: "10/10/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = F, warning = F)
+```
+
+### Synopsis  
+This project uses data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants to predict the manner in which they did the exercise.
+
+Random Forest is the best prediction model which yields accuracy of 99.51%.  
+
+### Data Source  
+The data for this project come from this source: http://groupware.les.inf.puc-rio.br/har   
+The training data:
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv  
+The test data:
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv  
+
+### Loading Data
+```{r loadData,cache=TRUE}
+traingDataURL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+validationDataURL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+training.raw <- read.csv(traingDataURL, header = T, na.strings = c("", "NA"))
+validation.raw <- read.csv(validationDataURL, header = T, na.strings = c("", "NA"))
+```
+
+### Loading libraries
+```{r}
+library(caret)
+library(rattle)
+library(randomForest)
+library(formattable)
+```
+
+### Data Exploration and Preprocessing 
+
+1. Explore raw data sets, convert manner variable "classe" to factor    
+There are 19622 rows of observation and 160 variables in the original training data, 20 rows of observation and 160 variables in the validation data.
+
+```{r results='hide'}
+str(training.raw) 
+head(training.raw)
+summary(training.raw)
+```
+```{r}
+dim(training.raw);dim(validation.raw)
+training.raw$classe <- as.factor(training.raw$classe)
+```
+
+
+2. Remove variables not related    
+This project uses data from accelerometers on the belt, forearm, arm, and dumbell to predict the excercise quality. Remove unrelated variables "X", "user_name", "raw_timestamp_part_1", "raw_timestamp_part_2", "cvtd_timestamp", "new_window", and "num_window".
+
+```{r}
+training.cleaned <- training.raw[, -c(1:7)]
+```
+
+
+3. Remove variables with too many missing values  
+As a rule of thumb, when the data goes missing on 60–70 percent of the variable, dropping the variable should be considered.
+
+```{r cache=TRUE}
+training.cleaned <- training.cleaned[, -which(colMeans(is.na(training.cleaned)) > 0.7)]
+```
+
+
+4. Remove zero covariates, which are basically have no variability in them  
+No zero covariates are found after the previous cleanup.
+```{r}
+nsv <- nearZeroVar(training.cleaned,saveMetrics=TRUE)
+table(nsv$nzv)
+```
+
+**We have 53 variables and no missing values after the cleanup.** 
+
+```{r}
+dim(training.cleaned);
+any(is.na(training.cleaned))
+```
+
+
+5. Data Partitioning: The partioning allocates 75% of the clean testing data into Testing set and 25% into Test set.  
+```{r trainingTest, cache=TRUE}
+set.seed(1234)
+inTrain <- createDataPartition(y=training.cleaned$classe, p=0.75, list=FALSE)
+training <- training.cleaned[inTrain,]
+testing <- training.cleaned[-inTrain,]
+dim(training); dim(testing)
+```
+
+
+6. Variables that have high correlation coefficients > 0.8
+```{r}
+M <- abs(cor(training.cleaned[,-53]))
+diag(M) <- 0
+which(M > 0.8,arr.ind=T)
+```
+Multicollinearity exist in the data. Since the most important thing for this project is to find the best performing model and interpreting predictor importance can be sacrificed, PCA may be used for pre-processing. PCA is most useful in linear-type models. However, it can reduce the number of predictors for the Random Forest to process, therefore may help speed up the training of Random Forest model. Note that computational cost is one of the biggest drawbacks of Random Forest.
+```{r}
+preProc <- preProcess(training[, -53], method="pca", thresh=0.95)
+preProc
+trainPC <- predict(preProc, training)
+testPC <- predict(preProc, testing)
+```
+
+### Prediction Models
+ 
+Regression and classification are categorized under the same umbrella of supervised machine learning. The main difference between them is that the output variable in regression is numerical (or continuous) while that for classification is categorical (or discrete). The target variable to predict for this project is "classe", a categorical variable. The 5 values of "classe" are described as:
+
+- A: exactly according to the specification
+- B: throwing the elbows to the front
+- C: lifting the dumbbell only halfway
+- D: lowering the dumbbell only halfway
+- E: throwing the hips to the front
+
+We will use classification algorithms to build 3 prediction models.      
+&nbsp;
+
+#### Model 1: Decision Tree
+```{r}
+modelFit_rpart <- train(classe~.,method="rpart",data=training)
+predict_rpart <- predict(modelFit_rpart,newdata=testing)
+confusionMatrix_rpart <- confusionMatrix(predict_rpart, testing$classe)
+confusionMatrix_rpart
+```
+&nbsp;
+
+#### Model 2: Random Forest without PCA
+My computer crashes when building RF model using:
+modelFit_rf<-train(classe~., method="rf", data=training)
+
+The alternative is to use randomForest library (https://www.kaggle.com/general/7951):
+```{r results='hide'}
+mtry <- tuneRF(training[,-53], training$classe, ntreeTry=500, stepFactor=1.5,improve=0.01, 
+               plot=FALSE, trace=TRUE, dobest=FALSE)
+```
+This will give a few values of mtry, the best is the one with the least OOB error. Now we can train Random Forest using:
+
+```{r}
+system.time(modelFit_rf<-randomForest(classe~., data=training, mtry=15, ntree=500))
+predict_rf <- predict(modelFit_rf,newdata=testing)
+confusionMatrix_rf <- confusionMatrix(predict_rf, testing$classe)
+confusionMatrix_rf
+```
+&nbsp;
+
+#### Model 3: Random Forest With PCA
+```{r}
+system.time(modelFit_rf_PCA <-randomForest(classe~., data=trainPC, mtry=15, ntree=500))
+predict_rf_PCA <- predict(modelFit_rf_PCA, newdata=testPC)
+confusionMatrix_rf_PCA <- confusionMatrix(predict_rf_PCA, testing$classe)
+confusionMatrix_rf_PCA
+```
+
+### Accuracy comparison:
+- Decision Tree: `r percent(confusionMatrix_rpart$overall[1])`  
+- Random Forest without PCA: `r percent(confusionMatrix_rf$overall[1])`  
+- Random Forest with PCA: `r percent(confusionMatrix_rf_PCA$overall[1])`  
+
+### Conclusion
+Compare with Random Forest without PCA(RF), Random Forest with PCA has lower accuracy and the model building time is pretty close. RF takes less than 2 minutes to build. It has an accuracy of `r percent(confusionMatrix_rf$overall[1])` and its out-of-sample-error is about 0.49%. RF performs the best prediction among the 3 models.
+
+### Predicton with Random Forest (without PCA) on validation data
+```{r}
+predict(modelFit_rf,newdata=validation.raw)
+```
